@@ -6,9 +6,18 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/api': 'http://localhost:8080',
-      '/twilio-webhook-handler': 'http://localhost:8080',
-      '/twilio-voice-app': 'http://localhost:8080'
+      '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/twilio-webhook-handler': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/twilio-voice-app': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      }
     }
   }
 })
