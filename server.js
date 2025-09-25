@@ -1,5 +1,4 @@
 import express from 'express';
-import bodyParser from 'body-parser';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import twilio from 'twilio';
@@ -11,14 +10,14 @@ const __dirname = path.dirname(__filename);
 
 // --- App Initialization ---
 const app = express();
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // --- In-Memory Storage (for demonstration purposes) ---
 let twilioConfig = {
-    accountSid: process.env.TWILIO_ACCOUNT_SID,
-    authToken: process.env.TWILIO_AUTH_TOKEN,
-    fromNumber: process.env.TWILIO_PHONE_NUMBER,
+    accountSid: process.env.TWILIO_ACCOUNT_SID || '',
+    authToken: process.env.TWILIO_AUTH_TOKEN || '',
+    fromNumber: process.env.TWILIO_PHONE_NUMBER || '',
 };
 let jobs = {}; // Store call job states
 
@@ -35,9 +34,15 @@ const getTwilioClient = () => {
 
 // --- API Endpoints ---
 
+// Fetch the current Twilio configuration
+app.get('/api/get-config', (req, res) => {
+    res.json(twilioConfig);
+});
+
 // Save Twilio configuration from the frontend
 app.post('/api/save-config', (req, res) => {
     twilioConfig = { ...twilioConfig, ...req.body };
+    console.log("Saved Twilio Config:", { ...twilioConfig, authToken: '...hidden' });
     res.json({ success: true, message: 'Configuration saved.' });
 });
 

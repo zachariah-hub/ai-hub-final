@@ -15,6 +15,25 @@ const App: React.FC = () => {
     authToken: '',
     fromNumber: '',
   });
+  
+  useEffect(() => {
+    const fetchConfig = async () => {
+      try {
+        const response = await fetch('/api/get-config');
+        if (response.ok) {
+          const data = await response.json();
+          // Only update if the fetched data has content, to avoid overwriting user input on a blank server state
+          if (data && (data.accountSid || data.authToken || data.fromNumber)) {
+            setTwilioConfig(data);
+          }
+        }
+      } catch (error) {
+        console.error("Could not fetch initial Twilio config:", error);
+      }
+    };
+    fetchConfig();
+  }, []);
+
 
   const renderMainContent = () => {
     switch (activeView) {
