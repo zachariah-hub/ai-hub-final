@@ -9,21 +9,34 @@ interface TwilioSettingsProps {
 
 const TwilioSettings: React.FC<TwilioSettingsProps> = ({ config, setConfig }) => {
     const { t } = useLocalization();
-    const [saveStatus, setSaveStatus] = useState<'idle' | 'saved'>('idle');
+    const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle');
 
     const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const { name, value } = e.target;
         setConfig({ ...config, [name]: value });
     };
 
-    const handleSave = () => {
-        // In a real application, this would make a secure API call to a backend endpoint.
-        // For this frontend demonstration, we'll just simulate the save action.
-        console.log("Saving Twilio configuration to backend:", config);
-        setSaveStatus('saved');
-        setTimeout(() => {
-            setSaveStatus('idle');
-        }, 3000);
+    const handleSave = async () => {
+        try {
+            const response = await fetch('/api/save-config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(config)
+            });
+
+            if (response.ok) {
+                setSaveStatus('saved');
+                setTimeout(() => setSaveStatus('idle'), 3000);
+            } else {
+                setSaveStatus('error');
+                console.error("Failed to save config to backend.");
+                setTimeout(() => setSaveStatus('idle'), 3000);
+            }
+        } catch (error) {
+            setSaveStatus('error');
+            console.error("Error saving config:", error);
+            setTimeout(() => setSaveStatus('idle'), 3000);
+        }
     };
 
     return (
@@ -81,6 +94,11 @@ const TwilioSettings: React.FC<TwilioSettingsProps> = ({ config, setConfig }) =>
                     {saveStatus === 'saved' && (
                         <span className="text-sm font-medium text-green-600 transition-opacity duration-300">
                             {t('twilio.save.success')}
+                        </span>
+                    )}
+                     {saveStatus === 'error' && (
+                        <span className="text-sm font-medium text-red-600 transition-opacity duration-300">
+                            Failed to save.
                         </span>
                     )}
                 </div>

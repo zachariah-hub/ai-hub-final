@@ -7,6 +7,8 @@ import AudioVisualizer from './AudioVisualizer';
 import AgentIcon from './icons/AgentIcon';
 import SupplierIcon from './icons/SupplierIcon';
 
+// Inform TypeScript about the global Twilio object from the script tag in index.html
+declare const Twilio: any;
 
 interface BotRunnerProps {
   suppliers: Supplier[];
@@ -24,15 +26,20 @@ const BotRunner: React.FC<BotRunnerProps> = ({ suppliers, products, twilioConfig
     const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
     const [viewMode, setViewMode] = useState<'setup' | 'console'>('setup');
     const [extractedData, setExtractedData] = useState<ExtractedData | null>(null);
+    const [jobId, setJobId] = useState<string | null>(null);
     
     const fullOrder = useRef<Order | null>(null);
-    const callInterval = useRef<number | null>(null);
+    const twilioDevice = useRef<any>(null);
     const canStart = suppliers.length > 0 && products.length > 0;
 
+    const isCallActive = status !== BotStatus.IDLE && status !== BotStatus.CALL_ENDED && status !== BotStatus.ERROR;
+
     useEffect(() => {
+        // Cleanup on component unmount
         return () => {
-            if (callInterval.current) {
-                clearInterval(callInterval.current);
+            if (twilioDevice.current) {
+                twilioDevice.current.disconnectAll();
+                twilioDevice.current = null;
             }
         };
     }, []);
@@ -52,10 +59,7 @@ const BotRunner: React.FC<BotRunnerProps> = ({ suppliers, products, twilioConfig
 
     const handleStartCall = () => {
         const supplier = suppliers.find(s => s.SupplierID === selectedSupplierId);
-        if (!supplier || orderItems.length === 0) {
-            alert("Please select a supplier and add at least one item to the order.");
-            return;
-        }
+        if (!supplier || orderItems.length === 0) return;
         if (!twilioConfig.fromNumber || !twilioConfig.accountSid || !twilioConfig.authToken) {
             alert(t('bot.runner.configWarning'));
             return;
@@ -64,7 +68,7 @@ const BotRunner: React.FC<BotRunnerProps> = ({ suppliers, products, twilioConfig
         setReviewModalOpen(true);
     };
 
-    const handleConfirmCall = () => {
+    const handleConfirmCall = async () => {
         if (!fullOrder.current) return;
         
         setReviewModalOpen(false);
@@ -73,56 +77,106 @@ const BotRunner: React.FC<BotRunnerProps> = ({ suppliers, products, twilioConfig
         setExtractedData(null);
         setViewMode('console');
         
-        const mockScript: (Omit<TranscriptEntry, 'timestamp'> | { action: 'extract', data: ExtractedData })[] = [
-            { speaker: 'agent', text: `Hola, soy un asistente de IA, llamando en nombre de su cliente para hacer un pedido.` },
-            { speaker: 'supplier', text: 'Hola, claro, dígame qué necesita.' },
-            { speaker: 'agent', text: `Necesitamos los siguientes productos: ${fullOrder.current.items.map(i => i.product.ProductName).join(', ')}.` },
-            { speaker: 'supplier', text: 'Entendido. Un momento mientras lo anoto.'},
-            { speaker: 'agent', text: 'Gracias, quedo a la espera.'},
-            { speaker: 'supplier', text: 'Perfecto, su pedido ha sido procesado. El número de confirmación es AX789-B y la entrega se estima en 3 a 5 días hábiles. ¿Algo más?'},
-            { action: 'extract', data: { confirmationId: 'AX789-B', deliveryEstimate: '3-5 business days' } },
-            { speaker: 'agent', text: 'No, eso es todo. Muchas gracias por su ayuda. ¡Adiós!'},
-        ];
-        
-        let scriptIndex = 0;
-        
-        callInterval.current = window.setInterval(() => {
-            if (scriptIndex < mockScript.length) {
-                const entry = mockScript[scriptIndex];
-                
-                if ('speaker' in entry) {
-                     setTranscript(prev => [...prev, { ...entry, timestamp: new Date() }]);
-                     if (entry.speaker === 'agent') {
-                        setStatus(BotStatus.AGENT_SPEAKING);
-                    } else {
-                        setStatus(BotStatus.LISTENING_FOR_RESPONSE);
-                    }
-                } else if ('action' in entry && entry.action === 'extract') {
-                    setExtractedData(entry.data);
-                    setStatus(BotStatus.PROCESSING_RESPONSE);
-                }
-
-                scriptIndex++;
+        try {
+            const response = await fetch('/api/start-call', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(fullOrder.current),
+            });
+            if (response.ok) {
+                const { jobId: newJobId } = await response.json();
+                setJobId(newJobId);
             } else {
-                handleEndCall();
+                console.error('Failed to start call');
+                setStatus(BotStatus.ERROR);
             }
-        }, 3500);
+        } catch (error) {
+            console.error('Error starting call:', error);
+            setStatus(BotStatus.ERROR);
+        }
     };
 
-    const handleEndCall = () => {
-        if (callInterval.current) {
-            clearInterval(callInterval.current);
-            callInterval.current = null;
+    const handleEndCall = async () => {
+        if (twilioDevice.current) {
+            twilioDevice.current.disconnectAll();
+            twilioDevice.current = null;
         }
+        if(jobId) {
+            await fetch(`/api/end-call/${jobId}`, { method: 'POST' });
+        }
+        setJobId(null);
         setStatus(BotStatus.CALL_ENDED);
         setTimeout(() => {
             setStatus(BotStatus.IDLE);
             setViewMode('setup');
+            setTranscript([]);
         }, 3000);
     };
-    
-    const isCallActive = status !== BotStatus.IDLE && status !== BotStatus.CALL_ENDED;
 
+    // Effect for polling call status from the backend
+    useEffect(() => {
+        if (!jobId || status === BotStatus.CALL_ENDED || status === BotStatus.ERROR) {
+            return;
+        }
+
+        const interval = setInterval(async () => {
+            try {
+                const response = await fetch(`/api/call-status/${jobId}`);
+                if(response.ok) {
+                    const data = await response.json();
+                    if (data) {
+                        setStatus(data.status);
+                        if (JSON.stringify(data.transcript) !== JSON.stringify(transcript)) {
+                            setTranscript(data.transcript);
+                        }
+                        if (data.extractedData) {
+                            setExtractedData(data.extractedData);
+                        }
+                        if (data.status === 'callEnded' || data.status === 'error') {
+                            if(twilioDevice.current) {
+                                twilioDevice.current.disconnectAll();
+                                twilioDevice.current = null;
+                            }
+                        }
+                    }
+                } else {
+                     setStatus(BotStatus.ERROR);
+                }
+            } catch (error) {
+                console.error("Failed to fetch call status", error);
+                setStatus(BotStatus.ERROR);
+            }
+        }, 2000);
+
+        return () => clearInterval(interval);
+    }, [jobId, status, transcript]);
+
+    // Effect for connecting to live audio via Twilio Voice SDK
+    useEffect(() => {
+        if (isCallActive && jobId && !twilioDevice.current) {
+            const setupTwilioDevice = async () => {
+                try {
+                    const response = await fetch('/api/get-audio-token');
+                    const { token } = await response.json();
+                    
+                    const device = new Twilio.Device(token, {
+                        codecPreferences: ['opus', 'pcmu'],
+                    });
+                    
+                    device.on('error', (error: any) => console.error('Twilio Device Error:', error.message));
+                    
+                    const params = { conferenceName: `ProcurementJob_${jobId}` };
+                    await device.connect({ params });
+                    twilioDevice.current = device;
+
+                } catch (error) {
+                    console.error("Could not setup Twilio Device for monitoring:", error);
+                }
+            };
+            setupTwilioDevice();
+        }
+    }, [isCallActive, jobId]);
+    
     if (!canStart) {
         return (
             <div className="flex items-center justify-center h-full">
@@ -265,10 +319,10 @@ const BotRunner: React.FC<BotRunnerProps> = ({ suppliers, products, twilioConfig
                 <div className="mt-auto pt-6 border-t border-gray-200">
                     <button 
                         onClick={handleStartCall}
-                        disabled={!selectedSupplierId || orderItems.length === 0}
+                        disabled={!selectedSupplierId || orderItems.length === 0 || isCallActive}
                         className="w-full bg-red-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-red-700 transition duration-300 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center"
                     >
-                        {t('bot.runner.startCall')}
+                        {isCallActive ? t('bot.runner.callInProgress') : t('bot.runner.startCall')}
                     </button>
                 </div>
             </div>
