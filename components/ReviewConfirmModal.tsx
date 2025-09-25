@@ -1,19 +1,18 @@
-
 import React from 'react';
 import { useLocalization } from '../hooks/useLocalization';
-import { Order } from '../types';
+import { OrderItem } from '../types';
 
 interface ReviewConfirmModalProps {
   isOpen: boolean;
   onClose: () => void;
   onConfirm: () => void;
-  order: Order | null;
+  jobDetails: { items: OrderItem[]; specialty: string; } | null;
 }
 
-const ReviewConfirmModal: React.FC<ReviewConfirmModalProps> = ({ isOpen, onClose, onConfirm, order }) => {
+const ReviewConfirmModal: React.FC<ReviewConfirmModalProps> = ({ isOpen, onClose, onConfirm, jobDetails }) => {
   const { t } = useLocalization();
 
-  if (!isOpen || !order) return null;
+  if (!isOpen || !jobDetails) return null;
 
   return (
     <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50 flex items-center justify-center">
@@ -25,11 +24,11 @@ const ReviewConfirmModal: React.FC<ReviewConfirmModalProps> = ({ isOpen, onClose
               {t('modal.confirm.body')}
             </p>
             <div className="mt-4 text-left bg-gray-50 p-4 rounded-lg border">
-                <p className="font-semibold text-gray-800">Supplier: <span className="font-normal">{order.supplier.SupplierName}</span></p>
+                <p className="font-semibold text-gray-800">Specialty: <span className="font-normal">{jobDetails.specialty}</span></p>
                 <p className="font-semibold text-gray-800 mt-2">Items:</p>
                 <ul className="list-disc list-inside text-sm text-gray-600">
-                    {order.items.map((item, index) => (
-                        <li key={index}>{item.product.ProductName}</li>
+                    {jobDetails.items.map((item, index) => (
+                        <li key={index}>{item.product.ProductName} ({item.quantity})</li>
                     ))}
                 </ul>
             </div>

@@ -71,16 +71,24 @@ app.post('/twilio-voice-app', (req, res) => {
     res.send(twiml.toString());
 });
 
-// Start a new call job
-app.post('/api/start-call', async (req, res) => {
-    const { supplier, items } = req.body;
-    if (!supplier || !items || items.length === 0) {
-        return res.status(400).json({ error: 'Supplier and order items are required.' });
+// Start a new call job based on a requisition
+app.post('/api/initiate-job', async (req, res) => {
+    const { items, specialty, suppliers } = req.body;
+    if (!items || items.length === 0 || !specialty || !suppliers) {
+        return res.status(400).json({ error: 'Requisition items, specialty, and supplier list are required.' });
     }
     const client = getTwilioClient();
     if (!client || !twilioConfig.fromNumber) {
         return res.status(500).json({ error: 'Twilio client not initialized. Check configuration.' });
     }
+
+    const matchingSuppliers = suppliers.filter(s => s.Specialty === specialty);
+    if (matchingSuppliers.length === 0) {
+        return res.status(400).json({ error: `No suppliers found with the specialty: "${specialty}"` });
+    }
+
+    // For this version, we'll just call the first supplier in the matched list.
+    const supplierToCall = matchingSuppliers[0];
 
     const jobId = `job_${Date.now()}`;
     const conferenceName = `ProcurementJob_${jobId}`;
@@ -89,7 +97,7 @@ app.post('/api/start-call', async (req, res) => {
         status: 'connecting',
         transcript: [],
         extractedData: null,
-        supplier,
+        supplier: supplierToCall,
         items,
         conversationHistory: [],
         callSid: null,
@@ -101,7 +109,7 @@ app.post('/api/start-call', async (req, res) => {
 
     try {
         const call = await client.calls.create({
-            to: supplier.PhoneNumber,
+            to: supplierToCall.PhoneNumber,
             from: twilioConfig.fromNumber,
             twiml: `<Response><Dial><Conference startConferenceOnEnter="true" endConferenceOnExit="true" statusCallback="${webhookUrl}" statusCallbackEvent="join leave end">${conferenceName}</Conference></Dial></Response>`,
             statusCallback: `${backendBaseUrl}/twilio-status-callback/${jobId}`,
@@ -130,7 +138,7 @@ app.post('/twilio-webhook/:jobId', async (req, res) => {
     if (status === 'participant-join' && !job.hasAgentJoined) {
         job.hasAgentJoined = true;
         job.status = 'agentSpeaking';
-        const orderItemsText = job.items.map(item => item.product.ProductName).join(', ');
+        const orderItemsText = job.items.map(item => `${item.quantity} ${item.product.UnitOfMeasure} de ${item.product.ProductName}`).join(', ');
         const initialPrompt = `Hola, soy un asistente de IA llamando para hacer un pedido de los siguientes productos: ${orderItemsText}. Por favor confirme si puede procesar este pedido.`;
         job.transcript.push({ speaker: 'agent', text: initialPrompt, timestamp: new Date() });
         job.conversationHistory.push({ role: 'model', parts: [{ text: initialPrompt }] });
@@ -142,7 +150,8 @@ app.post('/twilio-webhook/:jobId', async (req, res) => {
         job.conversationHistory.push({ role: 'user', parts: [{ text: speechResult }] });
 
         try {
-            const systemInstruction = `You are a purchasing agent AI on a live call. Your goal is to place an order, get a confirmation number, and a delivery estimate. Be concise. The order is for: ${job.items.map(i => i.product.ProductName).join(', ')}. Generate the next thing to say in Spanish. If you have all the information (confirmation number AND delivery estimate), you MUST start your response with the keyword "CONFIRMATION_COMPLETE" followed by a valid JSON object with 'confirmationId' and 'deliveryEstimate' keys, and then your final closing statement. Example: CONFIRMATION_COMPLETE {"confirmationId": "ABC-123", "deliveryEstimate": "2 days"} Perfect, thank you for your help. Goodbye.`;
+            const orderDetailsForAI = job.items.map(i => `${i.quantity} x ${i.product.ProductName}`).join(', ');
+            const systemInstruction = `You are a purchasing agent AI on a live call. Your goal is to place an order, get a confirmation number, and a delivery estimate. Be concise. The order is for: ${orderDetailsForAI}. Generate the next thing to say in Spanish. If you have all the information (confirmation number AND delivery estimate), you MUST start your response with the keyword "CONFIRMATION_COMPLETE" followed by a valid JSON object with 'confirmationId' and 'deliveryEstimate' keys, and then your final closing statement. Example: CONFIRMATION_COMPLETE {"confirmationId": "ABC-123", "deliveryEstimate": "2 days"} Perfect, thank you for your help. Goodbye.`;
             const chat = ai.chats.create({ model: 'gemini-2.5-flash', history: job.conversationHistory, config: { systemInstruction } });
             const result = await chat.sendMessage({ message: speechResult });
             const agentResponseText = result.text;
@@ -211,7 +220,9 @@ app.post('/api/end-call/:jobId', async (req, res) => {
             job.status = 'callEnded';
             return res.json({ success: true });
         } catch (error) {
-            return res.status(500).json({ error: "Could not end call." });
+            // It might fail if the call is already over, which is fine.
+            job.status = 'callEnded';
+            return res.json({ success: true, message: "Call likely already completed."});
         }
     }
     res.status(404).json({ error: 'Job not found or call not active.' });

@@ -1,11 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useLocalization } from '../hooks/useLocalization';
-import { Supplier, Product, Order, OrderItem, BotStatus, TwilioConfig, TranscriptEntry, ExtractedData } from '../types';
+import { Supplier, Product, OrderItem, BotStatus, TwilioConfig, TranscriptEntry, ExtractedData } from '../types';
 import StatusTag from './StatusTag';
 import ReviewConfirmModal from './ReviewConfirmModal';
 import AudioVisualizer from './AudioVisualizer';
 import AgentIcon from './icons/AgentIcon';
 import SupplierIcon from './icons/SupplierIcon';
+import FileUpload from './FileUpload';
 
 // Inform TypeScript about the global Twilio object from the script tag in index.html
 declare const Twilio: any;
@@ -16,23 +17,31 @@ interface BotRunnerProps {
   twilioConfig: TwilioConfig;
 }
 
+interface JobDetails {
+    items: OrderItem[];
+    specialty: string;
+    suppliers: Supplier[];
+    products: Product[];
+}
+
 const BotRunner: React.FC<BotRunnerProps> = ({ suppliers, products, twilioConfig }) => {
     const { t } = useLocalization();
-    const [selectedSupplierId, setSelectedSupplierId] = useState<string>('');
-    const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
-    const [currentProduct, setCurrentProduct] = useState<string>('');
+    const [requisitionItems, setRequisitionItems] = useState<OrderItem[]>([]);
+    const [selectedSpecialty, setSelectedSpecialty] = useState<string>('');
     const [status, setStatus] = useState<BotStatus>(BotStatus.IDLE);
     const [isReviewModalOpen, setReviewModalOpen] = useState(false);
     const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
     const [viewMode, setViewMode] = useState<'setup' | 'console'>('setup');
     const [extractedData, setExtractedData] = useState<ExtractedData | null>(null);
     const [jobId, setJobId] = useState<string | null>(null);
+    const [currentSupplier, setCurrentSupplier] = useState<Supplier | null>(null);
     
-    const fullOrder = useRef<Order | null>(null);
+    const fullJobDetails = useRef<JobDetails | null>(null);
     const twilioDevice = useRef<any>(null);
     const canStart = suppliers.length > 0 && products.length > 0;
 
-    const isCallActive = status !== BotStatus.IDLE && status !== BotStatus.CALL_ENDED && status !== BotStatus.ERROR;
+    const isJobActive = status !== BotStatus.IDLE && status !== BotStatus.CALL_ENDED && status !== BotStatus.ERROR;
+    const uniqueSpecialties = [...new Set(suppliers.map(s => s.Specialty))];
 
     useEffect(() => {
         // Cleanup on component unmount
@@ -44,32 +53,51 @@ const BotRunner: React.FC<BotRunnerProps> = ({ suppliers, products, twilioConfig
         };
     }, []);
 
-    const handleAddItem = () => {
-        if (!currentProduct) return;
-        const product = products.find(p => p.ProductID === currentProduct);
-        if (product && !orderItems.some(item => item.product.ProductID === currentProduct)) {
-            setOrderItems([...orderItems, { product, quantity: null, notes: null }]);
-            setCurrentProduct('');
+    const handleRequisitionUpload = (csvText: string) => {
+        try {
+            const lines = csvText.trim().split(/\r?\n/).slice(1);
+            if(lines.length === 0) {
+                 setRequisitionItems([]);
+                 return;
+            }
+            const items: OrderItem[] = lines.map(line => {
+                const [productId, quantityStr] = line.split(',');
+                const product = products.find(p => p.ProductID.trim() === productId.trim());
+                if (!product) {
+                    throw new Error(`Product with ID "${productId}" not found in master product list.`);
+                }
+                const quantity = parseInt(quantityStr.trim(), 10);
+                if (isNaN(quantity)) {
+                    throw new Error(`Invalid quantity for Product ID "${productId}".`);
+                }
+                return { product, quantity, notes: null };
+            });
+            setRequisitionItems(items);
+            setSelectedSpecialty('');
+        } catch (error: any) {
+            alert(`Error parsing requisition file: ${error.message}`);
+            setRequisitionItems([]);
         }
     };
 
-    const handleRemoveItem = (productId: string) => {
-        setOrderItems(orderItems.filter(item => item.product.ProductID !== productId));
-    };
 
-    const handleStartCall = () => {
-        const supplier = suppliers.find(s => s.SupplierID === selectedSupplierId);
-        if (!supplier || orderItems.length === 0) return;
+    const handleInitiateJob = () => {
+        if (requisitionItems.length === 0 || !selectedSpecialty) return;
         if (!twilioConfig.fromNumber || !twilioConfig.accountSid || !twilioConfig.authToken) {
             alert(t('bot.runner.configWarning'));
             return;
         }
-        fullOrder.current = { supplier, items: orderItems };
+        fullJobDetails.current = { 
+            items: requisitionItems, 
+            specialty: selectedSpecialty,
+            suppliers,
+            products
+        };
         setReviewModalOpen(true);
     };
 
-    const handleConfirmCall = async () => {
-        if (!fullOrder.current) return;
+    const handleConfirmJob = async () => {
+        if (!fullJobDetails.current) return;
         
         setReviewModalOpen(false);
         setStatus(BotStatus.CONNECTING);
@@ -78,20 +106,22 @@ const BotRunner: React.FC<BotRunnerProps> = ({ suppliers, products, twilioConfig
         setViewMode('console');
         
         try {
-            const response = await fetch('/api/start-call', {
+            const response = await fetch('/api/initiate-job', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(fullOrder.current),
+                body: JSON.stringify(fullJobDetails.current),
             });
             if (response.ok) {
                 const { jobId: newJobId } = await response.json();
                 setJobId(newJobId);
             } else {
-                console.error('Failed to start call');
+                const errorData = await response.json();
+                console.error('Failed to start job:', errorData.error);
+                alert(`Failed to start job: ${errorData.error}`);
                 setStatus(BotStatus.ERROR);
             }
         } catch (error) {
-            console.error('Error starting call:', error);
+            console.error('Error starting job:', error);
             setStatus(BotStatus.ERROR);
         }
     };
@@ -110,6 +140,7 @@ const BotRunner: React.FC<BotRunnerProps> = ({ suppliers, products, twilioConfig
             setStatus(BotStatus.IDLE);
             setViewMode('setup');
             setTranscript([]);
+            setCurrentSupplier(null);
         }, 3000);
     };
 
@@ -126,6 +157,7 @@ const BotRunner: React.FC<BotRunnerProps> = ({ suppliers, products, twilioConfig
                     const data = await response.json();
                     if (data) {
                         setStatus(data.status);
+                        setCurrentSupplier(data.supplier);
                         if (JSON.stringify(data.transcript) !== JSON.stringify(transcript)) {
                             setTranscript(data.transcript);
                         }
@@ -153,7 +185,7 @@ const BotRunner: React.FC<BotRunnerProps> = ({ suppliers, products, twilioConfig
 
     // Effect for connecting to live audio via Twilio Voice SDK
     useEffect(() => {
-        if (isCallActive && jobId && !twilioDevice.current) {
+        if (isJobActive && jobId && !twilioDevice.current) {
             const setupTwilioDevice = async () => {
                 try {
                     const response = await fetch('/api/get-audio-token');
@@ -175,7 +207,7 @@ const BotRunner: React.FC<BotRunnerProps> = ({ suppliers, products, twilioConfig
             };
             setupTwilioDevice();
         }
-    }, [isCallActive, jobId]);
+    }, [isJobActive, jobId]);
     
     if (!canStart) {
         return (
@@ -187,7 +219,7 @@ const BotRunner: React.FC<BotRunnerProps> = ({ suppliers, products, twilioConfig
         );
     }
     
-    if (viewMode === 'console' && fullOrder.current) {
+    if (viewMode === 'console' && currentSupplier) {
         return (
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 h-full">
                 {/* Left Panel: Call Sequence */}
@@ -196,10 +228,10 @@ const BotRunner: React.FC<BotRunnerProps> = ({ suppliers, products, twilioConfig
                     <div className="space-y-4">
                         <div className="p-4 bg-gray-50 rounded-lg border">
                             <div className="flex justify-between items-center">
-                                <h3 className="font-semibold text-gray-900">{fullOrder.current.supplier.SupplierName}</h3>
+                                <h3 className="font-semibold text-gray-900">{currentSupplier.SupplierName}</h3>
                                 <StatusTag status={status} />
                             </div>
-                            <p className="text-sm text-gray-500 mt-1">{t('bot.console.calling')} {fullOrder.current.supplier.PhoneNumber}</p>
+                            <p className="text-sm text-gray-500 mt-1">{t('bot.console.calling')} {currentSupplier.PhoneNumber}</p>
                         </div>
                     </div>
                     <div className="mt-auto pt-6 border-t border-gray-200">
@@ -235,7 +267,7 @@ const BotRunner: React.FC<BotRunnerProps> = ({ suppliers, products, twilioConfig
                         ))}
                     </div>
                      <div className="pt-4 mt-4 border-t border-gray-200 h-[91px] flex items-center justify-center">
-                        <AudioVisualizer isActive={isCallActive} />
+                        <AudioVisualizer isActive={isJobActive} />
                     </div>
                 </div>
                 
@@ -250,8 +282,8 @@ const BotRunner: React.FC<BotRunnerProps> = ({ suppliers, products, twilioConfig
                 <ReviewConfirmModal 
                     isOpen={isReviewModalOpen}
                     onClose={() => setReviewModalOpen(false)}
-                    onConfirm={handleConfirmCall}
-                    order={fullOrder.current}
+                    onConfirm={handleConfirmJob}
+                    jobDetails={fullJobDetails.current}
                 />
             </div>
         );
@@ -259,100 +291,64 @@ const BotRunner: React.FC<BotRunnerProps> = ({ suppliers, products, twilioConfig
     
     return (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 h-full">
-            <div className="lg:col-span-1 bg-white p-6 rounded-lg shadow-sm border border-gray-200 flex flex-col">
-                <h2 className="text-xl font-semibold text-gray-800">{t('bot.runner.orderSummary')}</h2>
+            <div className="lg:col-span-2 bg-white p-6 rounded-lg shadow-sm border border-gray-200 flex flex-col">
+                <h2 className="text-xl font-semibold text-gray-800">{t('bot.runner.uploadRequisition')}</h2>
                 <p className="text-sm text-gray-500 mt-1 mb-6">{t('bot.runner.description')}</p>
-
+                <p className="text-xs text-gray-400 mt-1 mb-6">{t('bot.runner.requisitionFileFormat')}</p>
+                
                 <div className="space-y-6 flex-1">
-                    <div>
-                        <label htmlFor="supplier-select" className="block text-sm font-medium text-gray-700">{t('bot.runner.selectSupplier')}</label>
-                        <select
-                            id="supplier-select"
-                            value={selectedSupplierId}
-                            onChange={(e) => setSelectedSupplierId(e.target.value)}
-                            className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-red-500 focus:border-red-500 sm:text-sm rounded-md"
-                            disabled={isCallActive}
-                        >
-                            <option value="" disabled>-- Select --</option>
-                            {suppliers.map(s => <option key={s.SupplierID} value={s.SupplierID}>{s.SupplierName}</option>)}
-                        </select>
-                    </div>
+                    <FileUpload onFileUpload={handleRequisitionUpload} />
 
-                    <div>
-                        <label htmlFor="product-select" className="block text-sm font-medium text-gray-700">{t('bot.runner.selectProduct')}</label>
-                        <div className="flex items-center space-x-2 mt-1">
-                            <select
-                                id="product-select"
-                                value={currentProduct}
-                                onChange={(e) => setCurrentProduct(e.target.value)}
-                                className="block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-red-500 focus:border-red-500 sm:text-sm rounded-md"
-                                disabled={isCallActive}
-                            >
-                                <option value="" disabled>-- Select --</option>
-                                {products.map(p => <option key={p.ProductID} value={p.ProductID}>{p.ProductName}</option>)}
-                            </select>
-                            <button onClick={handleAddItem} className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 disabled:bg-gray-400" disabled={!currentProduct || isCallActive}>
-                                {t('bot.runner.addOrderItem')}
-                            </button>
-                        </div>
-                    </div>
-
-                    <div className="border-t border-gray-200 pt-4 flex-1">
-                        <h3 className="text-md font-medium text-gray-800">Order Items</h3>
-                        {orderItems.length === 0 ? (
-                            <p className="text-sm text-gray-400 mt-2">No items added yet.</p>
-                        ) : (
-                            <ul className="mt-2 space-y-2">
-                                {orderItems.map(item => (
+                    {requisitionItems.length > 0 && (
+                        <div className="border-t border-gray-200 pt-4">
+                            <h3 className="text-md font-medium text-gray-800">{t('bot.runner.requisitionSummary')}</h3>
+                            <ul className="mt-2 space-y-1 text-sm text-gray-700 max-h-60 overflow-y-auto">
+                                {requisitionItems.map(item => (
                                     <li key={item.product.ProductID} className="flex justify-between items-center bg-gray-50 p-2 rounded">
                                         <span>{item.product.ProductName}</span>
-                                        <button onClick={() => handleRemoveItem(item.product.ProductID)} className="text-red-500 hover:text-red-700" disabled={isCallActive}>
-                                            &times;
-                                        </button>
+                                        <span className="font-semibold">{item.quantity}</span>
                                     </li>
                                 ))}
                             </ul>
-                        )}
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            <div className="lg:col-span-1 bg-white p-6 rounded-lg shadow-sm border border-gray-200 flex flex-col">
+                 <div className="flex-1">
+                     <h2 className="text-xl font-semibold text-gray-800">{t('bot.runner.initiateJob')}</h2>
+                     <div className="mt-6">
+                        <label htmlFor="specialty-select" className="block text-sm font-medium text-gray-700">{t('bot.runner.selectSpecialty')}</label>
+                        <select
+                            id="specialty-select"
+                            value={selectedSpecialty}
+                            onChange={(e) => setSelectedSpecialty(e.target.value)}
+                            className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-red-500 focus:border-red-500 sm:text-sm rounded-md"
+                            disabled={isJobActive || requisitionItems.length === 0}
+                        >
+                            <option value="" disabled>-- Select --</option>
+                            {uniqueSpecialties.map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
                     </div>
                 </div>
 
                 <div className="mt-auto pt-6 border-t border-gray-200">
                     <button 
-                        onClick={handleStartCall}
-                        disabled={!selectedSupplierId || orderItems.length === 0 || isCallActive}
+                        onClick={handleInitiateJob}
+                        disabled={requisitionItems.length === 0 || !selectedSpecialty || isJobActive}
                         className="w-full bg-red-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-red-700 transition duration-300 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center"
                     >
-                        {isCallActive ? t('bot.runner.callInProgress') : t('bot.runner.startCall')}
+                        {isJobActive ? t('bot.runner.callInProgress') : t('bot.runner.initiateJob')}
                     </button>
                 </div>
+                 <ReviewConfirmModal 
+                    isOpen={isReviewModalOpen}
+                    onClose={() => setReviewModalOpen(false)}
+                    onConfirm={handleConfirmJob}
+                    jobDetails={fullJobDetails.current}
+                />
             </div>
-
-            <div className="lg:col-span-2 bg-white p-6 rounded-lg shadow-sm border border-gray-200 flex flex-col h-full">
-                <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-xl font-semibold text-gray-800">{t('bot.runner.callInProgress')}</h2>
-                    <StatusTag status={status} />
-                </div>
-                <div className="flex-1 bg-gray-50 rounded-lg p-4 flex items-center justify-center">
-                     <div className="text-center text-gray-500">
-                        <div>
-                            <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-                            </svg>
-                            <h3 className="mt-2 text-sm font-medium text-gray-900">Awaiting Call</h3>
-                            <p className="mt-1 text-sm text-gray-500">
-                                Configure an order to start a call.
-                            </p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <ReviewConfirmModal 
-                isOpen={isReviewModalOpen}
-                onClose={() => setReviewModalOpen(false)}
-                onConfirm={handleConfirmCall}
-                order={fullOrder.current}
-            />
         </div>
     );
 };
