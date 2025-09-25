@@ -9,14 +9,20 @@ interface TwilioSettingsProps {
 
 const TwilioSettings: React.FC<TwilioSettingsProps> = ({ config, setConfig }) => {
     const { t } = useLocalization();
-    const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle');
+    const [saveState, setSaveState] = useState<{
+      status: 'idle' | 'validating' | 'saved' | 'error';
+      message: string | null;
+    }>({ status: 'idle', message: null });
+
 
     const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const { name, value } = e.target;
         setConfig({ ...config, [name]: value });
+        setSaveState({ status: 'idle', message: null }); // Reset on change
     };
 
     const handleSave = async () => {
+        setSaveState({ status: 'validating', message: t('twilio.save.validating') });
         try {
             const response = await fetch('/api/save-config', {
                 method: 'POST',
@@ -25,17 +31,24 @@ const TwilioSettings: React.FC<TwilioSettingsProps> = ({ config, setConfig }) =>
             });
 
             if (response.ok) {
-                setSaveStatus('saved');
-                setTimeout(() => setSaveStatus('idle'), 3000);
+                setSaveState({ status: 'saved', message: t('twilio.save.success') });
+                setTimeout(() => setSaveState({ status: 'idle', message: null }), 3000);
             } else {
-                setSaveStatus('error');
-                console.error("Failed to save config to backend.");
-                setTimeout(() => setSaveStatus('idle'), 3000);
+                const errorData = await response.json();
+                setSaveState({ status: 'error', message: errorData.error || 'An unknown validation error occurred.' });
             }
         } catch (error) {
-            setSaveStatus('error');
+            setSaveState({ status: 'error', message: t('twilio.save.error') });
             console.error("Error saving config:", error);
-            setTimeout(() => setSaveStatus('idle'), 3000);
+        }
+    };
+
+    const getStatusColor = () => {
+        switch(saveState.status) {
+            case 'saved': return 'text-green-600';
+            case 'error': return 'text-red-600';
+            case 'validating': return 'text-yellow-600';
+            default: return 'text-gray-500';
         }
     };
 
@@ -87,18 +100,13 @@ const TwilioSettings: React.FC<TwilioSettingsProps> = ({ config, setConfig }) =>
                     <button
                         onClick={handleSave}
                         className="px-6 py-2 bg-red-600 text-white font-semibold rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-50 transition duration-300 disabled:bg-gray-400"
-                        disabled={!config.accountSid || !config.authToken || !config.fromNumber}
+                        disabled={!config.accountSid || !config.authToken || !config.fromNumber || saveState.status === 'validating'}
                     >
-                        {t('twilio.save')}
+                        {t('twilio.saveAndValidate')}
                     </button>
-                    {saveStatus === 'saved' && (
-                        <span className="text-sm font-medium text-green-600 transition-opacity duration-300">
-                            {t('twilio.save.success')}
-                        </span>
-                    )}
-                     {saveStatus === 'error' && (
-                        <span className="text-sm font-medium text-red-600 transition-opacity duration-300">
-                            Failed to save.
+                    {saveState.message && (
+                        <span className={`text-sm font-medium transition-opacity duration-300 ${getStatusColor()}`}>
+                            {saveState.message}
                         </span>
                     )}
                 </div>

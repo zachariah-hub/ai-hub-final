@@ -30,7 +30,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeView, setActiveView }) => {
     <aside className="w-64 bg-gray-900 text-gray-300 flex flex-col transition-all duration-300">
       <div className="bg-gray-900 text-white p-6 flex items-center justify-center border-b border-gray-800">
         <h1 className="text-xl font-bold tracking-wider uppercase">
-          AI-OPS
+          REQ-BOT
         </h1>
       </div>
       <nav className="flex-1 px-4 py-6">

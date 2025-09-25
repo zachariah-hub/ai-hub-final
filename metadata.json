@@ -1,5 +1,5 @@
 {
-  "name": "Copy of AI Operations Hub",
-  "description": "A centralized platform for managing specialized AI agents (bots) for internal purchasing and operations departments. Features a bilingual interface and a dedicated data management section.",
+  "name": "Requisition Bot",
+  "description": "An AI-powered bot to automate the process of making purchasing calls based on requisition files.",
   "requestFramePermissions": []
 }
